@@ -118,6 +118,14 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
         "Tasks exceeding this are scored as FAIL. Default 30 minutes.",
     )
 
+    # --- Concurrency control ---
+    max_concurrent_tasks: int = Field(
+        default=8,
+        description="Maximum number of tasks to run concurrently. "
+        "Limits concurrent Modal sandbox creations to avoid deadlocks from "
+        "blocking Modal API calls inside thread pool workers.",
+    )
+
 
 # Tasks that cannot run properly on Modal and are excluded from scoring.
 MODAL_INCOMPATIBLE_TASKS = {
@@ -733,12 +741,23 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         print(f"  Tool thread pool: {self.config.tool_pool_size}")
         print(f"  Terminal timeout: {self.config.terminal_timeout}s/cmd")
         print(f"  Terminal lifetime: {self.config.terminal_lifetime}s (auto: task_timeout + 120)")
+        print(f"  Max concurrent tasks: {self.config.max_concurrent_tasks}")
         print(f"{'='*60}\n")
+
+        # Semaphore to limit concurrent Modal sandbox creations.
+        # Without this, all tasks fire simultaneously, each creating a Modal
+        # sandbox via asyncio.run() inside a thread pool worker. Modal's blocking
+        # calls deadlock when too many are created at once.
+        semaphore = asyncio.Semaphore(self.config.max_concurrent_tasks)
+
+        async def _eval_with_semaphore(item):
+            async with semaphore:
+                return await self._eval_with_timeout(item)
 
         # Fire all tasks with wall-clock timeout, track live accuracy on the bar
         total_tasks = len(self.all_eval_items)
         eval_tasks = [
-            asyncio.ensure_future(self._eval_with_timeout(item))
+            asyncio.ensure_future(_eval_with_semaphore(item))
             for item in self.all_eval_items
         ]
 

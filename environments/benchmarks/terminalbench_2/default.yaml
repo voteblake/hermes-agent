@@ -29,6 +29,9 @@ env:
   wandb_name: "terminal-bench-2"
   ensure_scores_are_not_same: false
   data_dir_to_save_evals: "environments/benchmarks/evals/terminal-bench-2"
+  # Limit concurrent Modal sandbox creations to avoid deadlocks from
+  # blocking Modal API calls inside thread pool workers.
+  max_concurrent_tasks: 8
 
 openai:
   base_url: "https://openrouter.ai/api/v1"
