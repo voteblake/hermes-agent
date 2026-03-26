@@ -881,20 +881,45 @@ class AIAgent:
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
         if self._session_db:
             try:
-                self._session_db.create_session(
-                    session_id=self.session_id,
-                    source=self.platform or "cli",
-                    model=self.model,
-                    model_config={
-                        "max_iterations": self.max_iterations,
-                        "reasoning_config": reasoning_config,
-                        "max_tokens": max_tokens,
-                    },
-                    user_id=None,
-                )
+                existing_session = None
+                try:
+                    existing_session = self._session_db.get_session(self.session_id)
+                except Exception:
+                    existing_session = None
+
+                if existing_session is None:
+                    self._session_db.create_session(
+                        session_id=self.session_id,
+                        source=self.platform or "cli",
+                        model=self.model,
+                        model_config={
+                            "max_iterations": self.max_iterations,
+                            "reasoning_config": reasoning_config,
+                            "max_tokens": max_tokens,
+                        },
+                        user_id=None,
+                    )
+                else:
+                    logger.debug(
+                        "Session %s already exists in SessionDB; attaching agent to existing record",
+                        self.session_id,
+                    )
             except Exception as e:
-                logger.warning("Session DB create_session failed — messages will NOT be indexed: %s", e)
-                self._session_db = None  # prevent silent data loss on every subsequent flush
+                # Gateway/session resume flows can legitimately pre-create the
+                # SQLite session row before the AIAgent is instantiated. Keep the
+                # DB attached if the row now exists; otherwise fail open and avoid
+                # repeated write errors on every subsequent flush.
+                try:
+                    if self._session_db.get_session(self.session_id):
+                        logger.debug(
+                            "Session DB create_session raced with an existing row for %s; reusing it",
+                            self.session_id,
+                        )
+                    else:
+                        raise
+                except Exception:
+                    logger.warning("Session DB create_session failed — messages will NOT be indexed: %s", e)
+                    self._session_db = None  # prevent silent data loss on every subsequent flush
         
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore

@@ -110,13 +110,13 @@ def test_aiagent_reuses_existing_errors_log_handler():
             patch("run_agent.OpenAI"),
         ):
             AIAgent(
-                api_key="test-k...7890",
+                api_key="***",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
             )
             AIAgent(
-                api_key="test-k...7890",
+                api_key="***",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -135,6 +135,41 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 handler.close()
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+def test_aiagent_keeps_session_db_when_session_row_already_exists(tmp_path):
+    """Gateway/resume flows pre-create the SQLite row; agent should attach, not disable recall."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="older-session", source="discord", user_id="user-1")
+    db.append_message("older-session", "user", "previous work")
+    db.create_session(session_id="existing-session", source="discord", user_id="user-1")
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("session_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="***",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_db=db,
+            session_id="existing-session",
+            platform="discord",
+        )
+
+    assert agent._session_db is db
+
+    result = json.loads(agent._invoke_tool("session_search", {}, "task-1"))
+    assert result["success"] is True
+    assert any(row["session_id"] == "older-session" for row in result["results"])
+    assert all(row["session_id"] != "existing-session" for row in result["results"])
 
 
 # ---------------------------------------------------------------------------
